@@ -15,6 +15,7 @@ class ChannelBase(BaseModel):
     timezone: str = "UTC"
     auto_post_enabled: bool = False
     content_strategy: str | None = None
+    generate_images: bool = False
 
 
 class ChannelCreate(ChannelBase):
@@ -31,6 +32,7 @@ class ChannelUpdate(BaseModel):
     timezone: str | None = None
     auto_post_enabled: bool | None = None
     content_strategy: str | None = None
+    generate_images: bool | None = None
 
 
 class ChannelRead(ChannelBase):

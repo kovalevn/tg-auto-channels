@@ -21,5 +21,6 @@ class Channel(Base):
     timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="UTC")
     auto_post_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     content_strategy: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    generate_images: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     posts: Mapped[list["Post"]] = relationship("Post", back_populates="channel", cascade="all, delete-orphan")

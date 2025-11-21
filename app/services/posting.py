@@ -6,6 +6,7 @@ from app.content.registry import ContentRegistry
 from app.db.models import Channel
 from app.db.models.post import PostStatusEnum
 from app.repositories.posts import PostRepository
+from app.services.image_generation import ImageGenerationService
 from app.telegram.client import TelegramClient
 
 logger = logging.getLogger(__name__)
@@ -28,10 +29,12 @@ class PostingService:
         content_registry: ContentRegistry,
         post_repo: PostRepository,
         telegram_client: TelegramClient,
+        image_generator: ImageGenerationService | None = None,
     ) -> None:
         self.content_registry = content_registry
         self.post_repo = post_repo
         self.telegram_client = telegram_client
+        self.image_generator = image_generator
 
     async def should_post(self, channel: Channel, now: datetime) -> bool:
         tz = ZoneInfo(channel.timezone)
@@ -56,12 +59,30 @@ class PostingService:
         content = await generator.generate(channel, now)
         logger.info("Generated content for channel %s", channel.internal_name)
         scheduled_for = now
+        image_url: str | None = None
+        if channel.generate_images:
+            if not self.image_generator:
+                logger.warning("Image generation requested but no generator configured")
+            else:
+                try:
+                    image_url = await self.image_generator.generate_image(content)
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("Failed to generate image for channel %s", channel.internal_name)
+                    image_url = None
 
         try:
-            await self.telegram_client.send_message(channel.telegram_channel_id, content)
+            if image_url:
+                await self.telegram_client.send_photo(
+                    channel.telegram_channel_id,
+                    photo_url=image_url,
+                    caption=content,
+                )
+            else:
+                await self.telegram_client.send_message(channel.telegram_channel_id, content)
             await self.post_repo.record_post(
                 channel_id=channel.id,
                 content=content,
+                image_url=image_url,
                 status=PostStatusEnum.sent,
                 scheduled_for=scheduled_for,
                 sent_at=now,
@@ -71,6 +92,7 @@ class PostingService:
             await self.post_repo.record_post(
                 channel_id=channel.id,
                 content=content,
+                image_url=image_url,
                 status=PostStatusEnum.failed,
                 scheduled_for=scheduled_for,
                 error=str(exc),
