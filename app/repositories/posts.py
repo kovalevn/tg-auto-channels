@@ -19,12 +19,14 @@ class PostRepository:
         content: str,
         status: str,
         scheduled_for: datetime,
+        image_url: str | None = None,
         error: str | None = None,
         sent_at: datetime | None = None,
     ) -> Post:
         post = Post(
             channel_id=channel_id,
             content=content,
+            image_url=image_url,
             status=status,
             scheduled_for=scheduled_for,
             error=error,

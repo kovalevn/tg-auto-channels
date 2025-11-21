@@ -41,6 +41,7 @@ class ChannelRepository:
                 "timezone",
                 "auto_post_enabled",
                 "content_strategy",
+                "generate_images",
             ):
                 setattr(existing, attr, getattr(channel, attr))
             await self.session.flush()
