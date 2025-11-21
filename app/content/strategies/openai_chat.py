@@ -1,4 +1,4 @@
-﻿from datetime import datetime
+from datetime import datetime
 
 from openai import AsyncOpenAI
 
@@ -17,7 +17,7 @@ class OpenAIChatGenerator:
         completion = await self.client.chat.completions.create(
             model="gpt-5.1",
             messages=[{"role": "user", "content": user_prompt}],
-            max_tokens=200,
+            max_completion_tokens=200,
             temperature=0.7,
         )
         return completion.choices[0].message.content or ""
