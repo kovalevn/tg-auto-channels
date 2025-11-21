@@ -1,0 +1,40 @@
+# --- PYTHON ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+*.egg
+*.log
+
+# --- VENV ---
+venv/
+.envrc
+.venv/
+.env.bak
+
+# --- PROJECT SECRETS ---
+.env
+.env.*
+
+# --- TESTS / TOOLS ---
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.cache/
+
+# --- EDITORS & IDE ---
+.vscode/
+.idea/
+*.iml
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- DOCKER / LOCAL DATA ---
+db-data/
+postgres-data/
+*.pid
