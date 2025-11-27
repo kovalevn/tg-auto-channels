@@ -42,6 +42,7 @@ class ChannelRepository:
                 "auto_post_enabled",
                 "content_strategy",
                 "generate_images",
+                "news_source_lists",
             ):
                 setattr(existing, attr, getattr(channel, attr))
             await self.session.flush()

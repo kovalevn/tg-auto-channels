@@ -16,6 +16,7 @@ class ChannelBase(BaseModel):
     auto_post_enabled: bool = False
     content_strategy: str | None = None
     generate_images: bool = False
+    news_source_lists: list[list[str]] | None = None
 
 
 class ChannelCreate(ChannelBase):
@@ -33,6 +34,7 @@ class ChannelUpdate(BaseModel):
     auto_post_enabled: bool | None = None
     content_strategy: str | None = None
     generate_images: bool | None = None
+    news_source_lists: list[list[str]] | None = None
 
 
 class ChannelRead(ChannelBase):

@@ -30,6 +30,37 @@ Create a `.env` file (see `.env.example`). Key variables:
 - `PUT /channels/{id}` — update channel.
 - `GET /preview/{id}` — generate a post without sending.
 
+Channel payloads support the following fields:
+
+- `content_strategy` — `placeholder` (default), `openai`, or `news`.
+- `news_source_lists` — массив списков RSS/Atom-источников, из которых собираются свежие новости для стратегии `news`.
+
+### News digest quickstart
+1. Убедитесь, что задали `OPENAI_API_KEY` в `.env` — без него стратегия `news` не будет активирована.
+2. Создайте канал через API с `content_strategy: "news"` и подключёнными RSS/Atom источниками (можно группировать по тематикам):
+   ```json
+   {
+     "internal_name": "it-daily",
+     "telegram_channel_id": 123456789,
+     "topic": "IT новости",
+     "content_strategy": "news",
+     "news_source_lists": [
+       [
+         "https://habr.com/ru/rss/all/all/",
+         "https://www.theverge.com/rss/index.xml"
+       ]
+     ],
+     "auto_post_enabled": true
+   }
+   ```
+3. Планировщик возьмёт самые свежие материалы за последние 24 часа из указанных лент, выберет наиболее недавний, переведёт и суммирует его на русском.
+4. В канал улетит короткий дайджест из 2–3 предложений со ссылкой на оригинал. Пример сообщения:
+   ```
+   Apple представила новые MacBook Pro на чипе M4, обещая заметный рост производительности и автономности. Обновлены дисплеи, улучшено охлаждение и добавлены новые порты для профессионалов.
+
+   Источник: https://www.theverge.com/example-article
+   ```
+
 ## Development
 - Content strategies are registered in `app/content/factory.py`.
 - Scheduler behavior lives in `app/services/scheduler.py` and `app/services/posting.py`.
