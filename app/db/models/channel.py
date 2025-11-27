@@ -1,7 +1,7 @@
 import uuid
 from datetime import time
 
-from sqlalchemy import Boolean, Integer, String, Text, Time, Uuid, BigInteger
+from sqlalchemy import Boolean, Integer, JSON, String, Text, Time, Uuid, BigInteger
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
@@ -22,5 +22,6 @@ class Channel(Base):
     auto_post_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     content_strategy: Mapped[str | None] = mapped_column(String(100), nullable=True)
     generate_images: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    news_source_lists: Mapped[list[list[str]] | None] = mapped_column(JSON, nullable=True)
 
     posts: Mapped[list["Post"]] = relationship("Post", back_populates="channel", cascade="all, delete-orphan")
