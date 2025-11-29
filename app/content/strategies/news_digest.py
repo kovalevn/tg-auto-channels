@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import random
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -66,7 +67,7 @@ class NewsDigestGenerator:
             return "Свежих новостей без повторов не нашлось."
 
         best_candidate = self._pick_best_candidate(candidates, now_utc)
-        return await self._summarize_candidate(best_candidate)
+        return await self._summarize_candidate(best_candidate, channel.language_code or "ru")
 
     @staticmethod
     def _flatten_sources(source_lists: list[list[str]] | None) -> list[str]:
@@ -98,12 +99,12 @@ class NewsDigestGenerator:
         if preferred:
             pool = preferred
 
-        index = int(now_utc.timestamp()) % len(pool)
-        return pool[index]
+        rng = random.Random(int(now_utc.timestamp()))
+        return rng.choice(pool)
 
     def _is_probably_article(self, candidate: NewsCandidate) -> bool:
         summary_text = self._squash_spaces(candidate.summary)
-        if len(summary_text) < 40:
+        if len(summary_text) < 20:
             return False
         if self._looks_like_section_link(candidate.link):
             return False
@@ -200,7 +201,7 @@ class NewsDigestGenerator:
                     continue
         return fallback
 
-    async def _summarize_candidate(self, candidate: NewsCandidate) -> str:
+    async def _summarize_candidate(self, candidate: NewsCandidate, language_code: str = "ru") -> str:
         article_text = await self._fetch_article_text(candidate.link)
         article_text = self._squash_spaces(article_text)
         summary_text = self._squash_spaces(candidate.summary)
@@ -209,17 +210,19 @@ class NewsDigestGenerator:
         combined_context = combined_context[:4000]  # keep prompt compact
 
         prompt = (
-            "You are an editor of a news Telegram channel. You get a title, an RSS summary and (if available) "
-            "the article text. Write 1-2 sentences about the main event from the article. Do not describe sections "
-            "or rubrics, do not invent details; stick to the provided text. Finish with 'Source: <url>'."
+            "Ты редактор новостного телеграм-канала. Тебе дают заголовок, выдержку из RSS и (если удалось) "
+            "текст статьи. Сформулируй 1–2 предложения о главном событии статьи на указанном языке. "
+            "Не описывай разделы или рубрики, не добавляй выдуманных подробностей — опирайся только на текст. "
+            "Заверши строкой 'Источник: <url>'."
         )
 
         user_message = (
-            f"Title: {candidate.title}\n"
-            f"RSS summary: {summary_text}\n"
-            f"Article text (if any): {combined_context}\n"
-            f"Link: {candidate.link}\n"
-            f"Source name: {candidate.source}"
+            f"Язык: {language_code}\n"
+            f"Заголовок: {candidate.title}\n"
+            f"Краткое описание из RSS: {summary_text}\n"
+            f"Текст статьи (если есть): {combined_context}\n"
+            f"Ссылка: {candidate.link}\n"
+            f"Источник: {candidate.source}"
         )
 
         completion = await self.client.chat.completions.create(
@@ -234,8 +237,8 @@ class NewsDigestGenerator:
 
         digest = completion.choices[0].message.content or ""
         digest = digest.strip()
-        if "Source:" not in digest:
-            digest = f"{digest}\n\nSource: {candidate.link}"
+        if "Источник:" not in digest:
+            digest = f"{digest}\n\nИсточник: {candidate.link}"
         return digest
 
     async def _fetch_article_text(self, url: str) -> str:
