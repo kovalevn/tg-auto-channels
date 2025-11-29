@@ -11,7 +11,7 @@ class OpenAIChatGenerator:
         settings = get_settings()
         self.client = client or AsyncOpenAI(api_key=settings.openai_api_key)
 
-    async def generate(self, channel: Channel, now: datetime) -> str:
+    async def generate(self, channel: Channel, now: datetime, recent_links: set[str] | None = None) -> str:
         user_prompt = f"{channel.topic}\nLanguage code: {channel.language_code or 'en'}"
 
         completion = await self.client.chat.completions.create(

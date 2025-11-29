@@ -34,15 +34,17 @@ class NewsDigestGenerator:
         client: AsyncOpenAI | None = None,
         lookback_hours: int = 24,
         max_entries_per_source: int = 5,
+        selection_pool_size: int = 5,
         request_timeout: int = 10,
     ) -> None:
         settings = get_settings()
         self.client = client or AsyncOpenAI(api_key=settings.openai_api_key)
         self.lookback_hours = lookback_hours
         self.max_entries_per_source = max_entries_per_source
+        self.selection_pool_size = max(1, selection_pool_size)
         self.request_timeout = request_timeout
 
-    async def generate(self, channel: Channel, now: datetime) -> str:
+    async def generate(self, channel: Channel, now: datetime, recent_links: set[str] | None = None) -> str:
         sources = self._flatten_sources(channel.news_source_lists)
         if not sources:
             return (
@@ -56,7 +58,14 @@ class NewsDigestGenerator:
         if not candidates:
             return "Свежих публикаций за выбранный период не найдено."
 
-        best_candidate = self._pick_best_candidate(candidates)
+        seen_links = {self._normalize_link(link) for link in (recent_links or set()) if link}
+        filtered = [c for c in candidates if self._normalize_link(c.link) not in seen_links]
+        if filtered:
+            candidates = filtered
+        elif seen_links:
+            return "Свежих новостей без повторов не нашлось."
+
+        best_candidate = self._pick_best_candidate(candidates, now_utc)
         return await self._summarize_candidate(best_candidate)
 
     @staticmethod
@@ -80,13 +89,17 @@ class NewsDigestGenerator:
             candidates.extend(result)
         return candidates
 
-    def _pick_best_candidate(self, candidates: list[NewsCandidate]) -> NewsCandidate:
-        """Prefer entries that look like real articles (not sections) and have longer summaries."""
+    def _pick_best_candidate(self, candidates: list[NewsCandidate], now_utc: datetime) -> NewsCandidate:
+        """Pick from a pool of the freshest items, favoring article-like entries."""
         sorted_candidates = sorted(candidates, key=lambda item: item.published_at, reverse=True)
-        for candidate in sorted_candidates:
-            if self._is_probably_article(candidate):
-                return candidate
-        return sorted_candidates[0]
+        pool = sorted_candidates[: self.selection_pool_size]
+
+        preferred = [c for c in pool if self._is_probably_article(c)]
+        if preferred:
+            pool = preferred
+
+        index = int(now_utc.timestamp()) % len(pool)
+        return pool[index]
 
     def _is_probably_article(self, candidate: NewsCandidate) -> bool:
         summary_text = self._squash_spaces(candidate.summary)
@@ -118,6 +131,19 @@ class NewsDigestGenerator:
         if parsed.query and "section" in parsed.query.lower():
             return True
         return False
+
+    @staticmethod
+    def _normalize_link(link: str) -> str:
+        try:
+            parsed = urlparse(link)
+        except Exception:
+            return link
+        if not parsed.netloc:
+            return link
+        scheme = parsed.scheme.lower() or "http"
+        netloc = parsed.netloc.lower()
+        path = parsed.path.rstrip("/")
+        return f"{scheme}://{netloc}{path}"
 
     async def _fetch_feed(
         self,
@@ -183,18 +209,17 @@ class NewsDigestGenerator:
         combined_context = combined_context[:4000]  # keep prompt compact
 
         prompt = (
-            "Ты редактор новостного телеграм-канала. Тебе дают заголовок, выдержку из RSS и (если удалось) "
-            "текст статьи. Сформулируй 1–2 предложения о главном событии статьи. Не описывай разделы или рубрики, "
-            "не добавляй выдуманных подробностей — опирайся только на предоставленный текст. Заверши строкой "
-            "'Источник: <url>'."
+            "You are an editor of a news Telegram channel. You get a title, an RSS summary and (if available) "
+            "the article text. Write 1-2 sentences about the main event from the article. Do not describe sections "
+            "or rubrics, do not invent details; stick to the provided text. Finish with 'Source: <url>'."
         )
 
         user_message = (
-            f"Заголовок: {candidate.title}\n"
-            f"Краткое описание из RSS: {summary_text}\n"
-            f"Текст статьи (если есть): {combined_context}\n"
-            f"Ссылка: {candidate.link}\n"
-            f"Источник: {candidate.source}"
+            f"Title: {candidate.title}\n"
+            f"RSS summary: {summary_text}\n"
+            f"Article text (if any): {combined_context}\n"
+            f"Link: {candidate.link}\n"
+            f"Source name: {candidate.source}"
         )
 
         completion = await self.client.chat.completions.create(
@@ -209,8 +234,8 @@ class NewsDigestGenerator:
 
         digest = completion.choices[0].message.content or ""
         digest = digest.strip()
-        if "Источник:" not in digest:
-            digest = f"{digest}\n\nИсточник: {candidate.link}"
+        if "Source:" not in digest:
+            digest = f"{digest}\n\nSource: {candidate.link}"
         return digest
 
     async def _fetch_article_text(self, url: str) -> str:
@@ -227,7 +252,7 @@ class NewsDigestGenerator:
     @staticmethod
     def _extract_text_from_html(html: str) -> str:
         """Very lightweight HTML-to-text conversion without extra deps."""
-        html = re.sub(r"(?is)<(script|style)[^>]*>.*?</\\1>", " ", html)
+        html = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", html)
         text = re.sub(r"(?is)<[^>]+>", " ", html)
         text = unescape(text)
         text = " ".join(text.split())
