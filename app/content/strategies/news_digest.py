@@ -1,8 +1,11 @@
 import asyncio
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from html import unescape
 from typing import Any, Iterable
+from urllib.parse import urlparse
 
 import feedparser
 import httpx
@@ -43,17 +46,17 @@ class NewsDigestGenerator:
         sources = self._flatten_sources(channel.news_source_lists)
         if not sources:
             return (
-                "Не настроены источники новостей для этого канала. "
-                "Добавьте RSS/Atom ссылки, чтобы получать дайджесты."
+                "Для канала нет активных новостных источников. "
+                "Добавьте RSS/Atom ленты, чтобы получать материалы."
             )
 
         now_utc = now.astimezone(timezone.utc)
         cutoff = now_utc - timedelta(hours=self.lookback_hours)
         candidates = await self._collect_candidates(sources, cutoff, now_utc)
         if not candidates:
-            return "Свежих новостей из подключенных источников не нашлось."
+            return "Свежих публикаций за выбранный период не найдено."
 
-        best_candidate = sorted(candidates, key=lambda item: item.published_at, reverse=True)[0]
+        best_candidate = self._pick_best_candidate(candidates)
         return await self._summarize_candidate(best_candidate)
 
     @staticmethod
@@ -77,6 +80,45 @@ class NewsDigestGenerator:
             candidates.extend(result)
         return candidates
 
+    def _pick_best_candidate(self, candidates: list[NewsCandidate]) -> NewsCandidate:
+        """Prefer entries that look like real articles (not sections) and have longer summaries."""
+        sorted_candidates = sorted(candidates, key=lambda item: item.published_at, reverse=True)
+        for candidate in sorted_candidates:
+            if self._is_probably_article(candidate):
+                return candidate
+        return sorted_candidates[0]
+
+    def _is_probably_article(self, candidate: NewsCandidate) -> bool:
+        summary_text = self._squash_spaces(candidate.summary)
+        if len(summary_text) < 40:
+            return False
+        if self._looks_like_section_link(candidate.link):
+            return False
+        return True
+
+    @staticmethod
+    def _squash_spaces(text: str) -> str:
+        return " ".join(text.split())
+
+    def _looks_like_section_link(self, link: str) -> bool:
+        parsed = urlparse(link)
+        path = parsed.path.lower()
+        section_markers = (
+            "section",
+            "sections",
+            "category",
+            "categories",
+            "specials",
+            "topics",
+            "tags",
+            "collections",
+        )
+        if any(f"/{marker}" in path for marker in section_markers):
+            return True
+        if parsed.query and "section" in parsed.query.lower():
+            return True
+        return False
+
     async def _fetch_feed(
         self,
         client: httpx.AsyncClient,
@@ -96,7 +138,7 @@ class NewsDigestGenerator:
                 continue
             entries.append(
                 NewsCandidate(
-                    title=str(entry.get("title", "Без названия")),
+                    title=str(entry.get("title", "Без заголовка")),
                     link=str(entry.get("link", url)),
                     summary=str(self._extract_summary(entry)),
                     published_at=published_at,
@@ -133,15 +175,24 @@ class NewsDigestGenerator:
         return fallback
 
     async def _summarize_candidate(self, candidate: NewsCandidate) -> str:
+        article_text = await self._fetch_article_text(candidate.link)
+        article_text = self._squash_spaces(article_text)
+        summary_text = self._squash_spaces(candidate.summary)
+
+        combined_context = f"{summary_text}\n\n{article_text}".strip() or summary_text or article_text or candidate.title
+        combined_context = combined_context[:4000]  # keep prompt compact
+
         prompt = (
-            "Ты новостной редактор. Найди ключевые факты, кратко изложи их на русском языке, "
-            "а если исходный текст не на русском — переведи. Сделай 2-3 коротких предложения "
-            "без лишних деталей. Заверши блоком 'Источник: <url>'."
+            "Ты редактор новостного телеграм-канала. Тебе дают заголовок, выдержку из RSS и (если удалось) "
+            "текст статьи. Сформулируй 1–2 предложения о главном событии статьи. Не описывай разделы или рубрики, "
+            "не добавляй выдуманных подробностей — опирайся только на предоставленный текст. Заверши строкой "
+            "'Источник: <url>'."
         )
 
         user_message = (
             f"Заголовок: {candidate.title}\n"
-            f"Краткое описание: {candidate.summary}\n"
+            f"Краткое описание из RSS: {summary_text}\n"
+            f"Текст статьи (если есть): {combined_context}\n"
             f"Ссылка: {candidate.link}\n"
             f"Источник: {candidate.source}"
         )
@@ -161,3 +212,23 @@ class NewsDigestGenerator:
         if "Источник:" not in digest:
             digest = f"{digest}\n\nИсточник: {candidate.link}"
         return digest
+
+    async def _fetch_article_text(self, url: str) -> str:
+        try:
+            async with httpx.AsyncClient(timeout=self.request_timeout, follow_redirects=True) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+        except Exception as exc:  # noqa: BLE001
+            logger.info("Failed to fetch article text from %s: %s", url, exc)
+            return ""
+
+        return self._extract_text_from_html(response.text)
+
+    @staticmethod
+    def _extract_text_from_html(html: str) -> str:
+        """Very lightweight HTML-to-text conversion without extra deps."""
+        html = re.sub(r"(?is)<(script|style)[^>]*>.*?</\\1>", " ", html)
+        text = re.sub(r"(?is)<[^>]+>", " ", html)
+        text = unescape(text)
+        text = " ".join(text.split())
+        return text.strip()
