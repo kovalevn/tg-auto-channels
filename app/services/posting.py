@@ -61,6 +61,9 @@ class PostingService:
         recent_links = self._extract_links_from_posts(recent_posts)
 
         content = await generator.generate(channel, now, recent_links=recent_links)
+        if not content or not content.strip():
+            logger.info("No content generated for channel %s, skipping send", channel.internal_name)
+            return
         logger.info("Generated content for channel %s", channel.internal_name)
         scheduled_for = now
         image_url: str | None = None

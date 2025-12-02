@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from html import unescape
 from typing import Any, Iterable
-from urllib.parse import urlparse
+from urllib.parse import quote_plus, urlparse
 
 import feedparser
 import httpx
@@ -48,23 +48,20 @@ class NewsDigestGenerator:
     async def generate(self, channel: Channel, now: datetime, recent_links: set[str] | None = None) -> str:
         sources = self._flatten_sources(channel.news_source_lists)
         if not sources:
-            return (
-                "Для канала нет активных новостных источников. "
-                "Добавьте RSS/Atom ленты, чтобы получать материалы."
-            )
+            return ""
 
         now_utc = now.astimezone(timezone.utc)
         cutoff = now_utc - timedelta(hours=self.lookback_hours)
         candidates = await self._collect_candidates(sources, cutoff, now_utc)
         if not candidates:
-            return "Свежих публикаций за выбранный период не найдено."
+            return ""
 
         seen_links = {self._normalize_link(link) for link in (recent_links or set()) if link}
         filtered = [c for c in candidates if self._normalize_link(c.link) not in seen_links]
         if filtered:
             candidates = filtered
         elif seen_links:
-            return "Свежих новостей без повторов не нашлось."
+            return ""
 
         best_candidate = self._pick_best_candidate(candidates, now_utc)
         return await self._summarize_candidate(best_candidate, channel.language_code or "ru")
@@ -210,10 +207,9 @@ class NewsDigestGenerator:
         combined_context = combined_context[:4000]  # keep prompt compact
 
         prompt = (
-            "Ты редактор новостного телеграм-канала. Тебе дают заголовок, выдержку из RSS и (если удалось) "
-            "текст статьи. Сформулируй 1–2 предложения о главном событии статьи на указанном языке. "
-            "Не описывай разделы или рубрики, не добавляй выдуманных подробностей — опирайся только на текст. "
-            "Заверши строкой 'Источник: <url>'."
+            "Ты редактор новостного телеграм-канала. Тебе дают заголовок, выдержку из RSS и (если удалось) текст статьи. "
+            "Сделай цепляющий заголовок (он будет выделен жирным) и 3-4 предложения с выжимкой сути новости на указанном языке. "
+            "Не описывай разделы или рубрики, не выдумывай факты — только из текста. Верни только заголовок и обзор, мы сами добавим ссылки."
         )
 
         user_message = (
@@ -232,13 +228,13 @@ class NewsDigestGenerator:
                 {"role": "user", "content": user_message},
             ],
             max_completion_tokens=180,
-            temperature=0.3,
+            temperature=0.2,
         )
 
         digest = completion.choices[0].message.content or ""
         digest = digest.strip()
-        if "Источник:" not in digest:
-            digest = f"{digest}\n\nИсточник: {candidate.link}"
+        translation_link = self._build_translation_link(candidate.link, language_code)
+        digest = f"**{candidate.title}**\n{digest}\n\nПеревод: {translation_link}\nОригинал: {candidate.link}"
         return digest
 
     async def _fetch_article_text(self, url: str) -> str:
@@ -260,3 +256,9 @@ class NewsDigestGenerator:
         text = unescape(text)
         text = " ".join(text.split())
         return text.strip()
+
+    @staticmethod
+    def _build_translation_link(link: str, language_code: str) -> str:
+        target_lang = language_code or "ru"
+        encoded = quote_plus(link)
+        return f"https://translate.google.com/translate?hl={target_lang}&sl=auto&tl={target_lang}&u={encoded}"
