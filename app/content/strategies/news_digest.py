@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import json
 import random
 import re
 from dataclasses import dataclass
@@ -44,6 +45,7 @@ class NewsDigestGenerator:
         self.max_entries_per_source = max_entries_per_source
         self.selection_pool_size = max(1, selection_pool_size)
         self.request_timeout = request_timeout
+        self.telegraph_token = getattr(settings, "telegraph_token", None)
 
     async def generate(self, channel: Channel, now: datetime, recent_links: set[str] | None = None) -> str:
         sources = self._flatten_sources(channel.news_source_lists)
@@ -208,13 +210,14 @@ class NewsDigestGenerator:
 
         prompt = (
             "Ты редактор новостного телеграм-канала. Тебе дают заголовок, выдержку из RSS и (если удалось) текст статьи. "
-            "Сделай цепляющий заголовок (он будет выделен жирным) и 3-4 предложения с выжимкой сути новости на указанном языке. "
-            "Не описывай разделы или рубрики, не выдумывай факты — только из текста. Верни только заголовок и обзор, мы сами добавим ссылки."
+            "Сделай заголовок на русском (даже если исходный другой язык) и 3-4 предложения с выжимкой сути на указанном языке. "
+            "Не описывай разделы или рубрики, не выдумывай факты — только из текста. Верни строго в формате:\n"
+            "HEADLINE: <заголовок на русском>\nSUMMARY: <3-4 предложения обзора>."
         )
 
         user_message = (
-            f"Язык: {language_code}\n"
-            f"Заголовок: {candidate.title}\n"
+            f"Язык обзора: {language_code}\n"
+            f"Заголовок из ленты: {candidate.title}\n"
             f"Краткое описание из RSS: {summary_text}\n"
             f"Текст статьи (если есть): {combined_context}\n"
             f"Ссылка: {candidate.link}\n"
@@ -227,14 +230,25 @@ class NewsDigestGenerator:
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": user_message},
             ],
-            max_completion_tokens=180,
+            max_completion_tokens=220,
             temperature=0.2,
         )
 
-        digest = completion.choices[0].message.content or ""
-        digest = digest.strip()
-        translation_link = self._build_translation_link(candidate.link, language_code)
-        digest = f"**{candidate.title}**\n{digest}\n\nПеревод: {translation_link}\nОригинал: {candidate.link}"
+        digest_raw = completion.choices[0].message.content or ""
+        headline, summary = self._parse_headline_summary(
+            digest_raw,
+            fallback_headline=candidate.title,
+            fallback_summary=summary_text or article_text or "",
+        )
+        translation_link = await self._build_translation_link(
+            title=headline,
+            text=article_text or summary_text,
+            language_code=language_code,
+        )
+        if not translation_link:
+            translation_link = candidate.link
+
+        digest = f"**{headline}**\n{summary}\n\nПеревод: {translation_link}\nОригинал: {candidate.link}"
         return digest
 
     async def _fetch_article_text(self, url: str) -> str:
@@ -258,7 +272,65 @@ class NewsDigestGenerator:
         return text.strip()
 
     @staticmethod
-    def _build_translation_link(link: str, language_code: str) -> str:
-        target_lang = language_code or "ru"
-        encoded = quote_plus(link)
-        return f"https://translate.google.com/translate?hl={target_lang}&sl=auto&tl={target_lang}&u={encoded}"
+    def _parse_headline_summary(raw: str, fallback_headline: str, fallback_summary: str) -> tuple[str, str]:
+        headline = fallback_headline
+        summary = fallback_summary
+        for line in raw.splitlines():
+            if line.strip().upper().startswith("HEADLINE:"):
+                headline = line.split(":", 1)[1].strip() or headline
+            if line.strip().upper().startswith("SUMMARY:"):
+                summary = line.split(":", 1)[1].strip() or summary
+        if summary == fallback_summary and raw:
+            summary = raw.strip()
+        return headline, summary
+
+    async def _build_translation_link(self, title: str, text: str | None, language_code: str) -> str:
+        if not text:
+            return ""
+        translated = await self._translate_text(text, language_code)
+        if not translated:
+            return ""
+        if not self.telegraph_token:
+            return ""
+        try:
+            return await self._publish_to_telegraph(title, translated)
+        except Exception as exc:  # noqa: BLE001
+            logger.info("Failed to publish to Telegraph: %s", exc)
+            return ""
+
+    async def _translate_text(self, text: str, target_lang: str) -> str | None:
+        try:
+            completion = await self.client.chat.completions.create(
+                model="gpt-5.1",
+                messages=[
+                    {"role": "system", "content": "Translate the text to the target language. Return plain text only."},
+                    {
+                        "role": "user",
+                        "content": f"Target language: {target_lang}\nText:\n{text[:6000]}",
+                    },
+                ],
+                max_completion_tokens=600,
+                temperature=0.0,
+            )
+            translated = completion.choices[0].message.content or ""
+            return translated.strip()
+        except Exception as exc:  # noqa: BLE001
+            logger.info("Translation failed: %s", exc)
+            return None
+
+    async def _publish_to_telegraph(self, title: str, content: str) -> str:
+        paragraphs = [p.strip() for p in content.split("\n") if p.strip()]
+        nodes = [{"tag": "p", "children": [p]} for p in paragraphs]
+        payload = {
+            "access_token": self.telegraph_token,
+            "title": title[:256] or "News",
+            "content": json.dumps(nodes),
+            "return_content": False,
+        }
+        async with httpx.AsyncClient(timeout=self.request_timeout) as client:
+            response = await client.post("https://api.telegra.ph/createPage", data=payload)
+            response.raise_for_status()
+            data = response.json()
+            if not data.get("ok"):
+                raise RuntimeError(f"Telegraph error: {data}")
+            return data["result"]["url"]
