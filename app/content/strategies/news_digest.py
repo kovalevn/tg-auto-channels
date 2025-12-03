@@ -269,12 +269,46 @@ class NewsDigestGenerator:
 
     @staticmethod
     def _extract_text_from_html(html: str) -> str:
-        """Very lightweight HTML-to-text conversion without extra deps."""
+        """Lightweight HTML-to-text conversion with basic boilerplate stripping."""
         html = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", html)
-        text = re.sub(r"(?is)<[^>]+>", " ", html)
-        text = unescape(text)
-        text = " ".join(text.split())
-        return text.strip()
+        paragraphs = re.findall(r"(?is)<p[^>]*>(.*?)</p>", html)
+        cleaned_parts: list[str] = []
+        for raw in paragraphs:
+            text = re.sub(r"(?is)<[^>]+>", " ", raw)
+            text = unescape(text)
+            text = " ".join(text.split()).strip()
+            if len(text) < 40:
+                continue
+            if NewsDigestGenerator._looks_like_boilerplate(text):
+                continue
+            cleaned_parts.append(text)
+        if not cleaned_parts:
+            # Fallback to plain text if no good paragraphs found
+            text = re.sub(r"(?is)<[^>]+>", " ", html)
+            text = unescape(text)
+            text = " ".join(text.split())
+            return text.strip()
+        return "\n".join(cleaned_parts)
+
+    @staticmethod
+    def _looks_like_boilerplate(text: str) -> bool:
+        lowered = text.lower()
+        boilerplate_keywords = (
+            "cookies",
+            "privacy",
+            "navigation",
+            "menu",
+            "subscribe",
+            "newsletter",
+            "sign up",
+            "manage subscription",
+            "settings",
+            "notification",
+            "offline",
+            "home",
+            "breaking news",
+        )
+        return any(k in lowered for k in boilerplate_keywords)
 
     @staticmethod
     def _parse_headline_summary(raw: str, fallback_headline: str, fallback_summary: str) -> tuple[str, str]:
@@ -304,10 +338,11 @@ class NewsDigestGenerator:
         original_link: str,
     ) -> str:
         target_lang = language_code or "ru"
-        payload_text = text or ""
-        translated = await self._translate_text(payload_text, target_lang) or payload_text
+        if not text:
+            return self._google_translate_link(original_link, target_lang)
 
-        if self.telegraph_token and translated:
+        translated = await self._translate_text(text, target_lang)
+        if translated and self.telegraph_token:
             try:
                 return await self._publish_to_telegraph(title, translated)
             except Exception as exc:  # noqa: BLE001
