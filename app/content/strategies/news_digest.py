@@ -211,8 +211,9 @@ class NewsDigestGenerator:
         prompt = (
             "Ты редактор новостного телеграм-канала. Тебе дают заголовок, выдержку из RSS и (если удалось) текст статьи. "
             "Сделай заголовок на русском (даже если исходник другой язык) и 3-4 предложения с выжимкой сути на указанном языке. "
-            "Игнорируй рекламные вставки, призывы зарегистрироваться, вебинары, конференции и CTA. Не описывай разделы или рубрики, "
-            "не выдумывай факты — только из текста. Верни строго в формате:\n"
+            "Игнорируй рекламные вставки, призывы зарегистрироваться, вебинары, конференции, CTA, ошибки воспроизведения видео, "
+            "сообщения про включение трекинга/уведомлений/подписок и системные сообщения типа 'страница не найдена'. "
+            "Не описывай разделы или рубрики, не выдумывай факты — только из текста. Верни строго в формате:\n"
             "HEADLINE: <заголовок на русском>\nSUMMARY: <3-4 предложения обзора>."
         )
 
@@ -287,7 +288,10 @@ class NewsDigestGenerator:
             text = re.sub(r"(?is)<[^>]+>", " ", html)
             text = unescape(text)
             text = " ".join(text.split())
-            return text.strip()
+            text = text.strip()
+            if NewsDigestGenerator._looks_like_boilerplate(text):
+                return ""
+            return text
         return "\n".join(cleaned_parts)
 
     @staticmethod
@@ -307,6 +311,21 @@ class NewsDigestGenerator:
             "offline",
             "home",
             "breaking news",
+            "page not found",
+            "content not available",
+            "does not exist",
+            "unavailable",
+            "video player",
+            "enable tracking",
+            "adblock",
+            "browser extension",
+            "sign up for newsletters",
+            "register to watch",
+            "play video",
+            "skip to main",
+            "main content",
+            "offline navigation",
+            "menu menu",
         )
         return any(k in lowered for k in boilerplate_keywords)
 
@@ -321,11 +340,24 @@ class NewsDigestGenerator:
                 summary = line.split(":", 1)[1].strip() or summary
         if summary == fallback_summary and raw:
             summary = raw.strip()
+        summary = NewsDigestGenerator._strip_promotional(summary)
         return headline, summary
 
     @staticmethod
     def _strip_promotional(text: str) -> str:
-        promo_keywords = ("регистрируй", "запишись", "подпишись", "участвуй", "конференц", "вебинар", "регистрация")
+        promo_keywords = (
+            "регистрируй",
+            "регистрация",
+            "подпишись",
+            "subscribe",
+            "newsletter",
+            "участвуй",
+            "конференц",
+            "вебинар",
+            "watch live",
+            "sign up",
+            "join us",
+        )
         sentences = re.split(r"(?<=[.!?])\s+", text)
         cleaned = [s for s in sentences if not any(k in s.lower() for k in promo_keywords)]
         return " ".join(cleaned).strip() or text
