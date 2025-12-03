@@ -1,6 +1,6 @@
 import asyncio
-import logging
 import json
+import logging
 import random
 import re
 from dataclasses import dataclass
@@ -29,7 +29,7 @@ class NewsCandidate:
 
 
 class NewsDigestGenerator:
-    """Generates a short Russian news digest from configured feeds."""
+    """Generates a short news post from configured feeds."""
 
     def __init__(
         self,
@@ -210,7 +210,7 @@ class NewsDigestGenerator:
 
         prompt = (
             "Ты редактор новостного телеграм-канала. Тебе дают заголовок, выдержку из RSS и (если удалось) текст статьи. "
-            "Сделай заголовок на русском (даже если исходный другой язык) и 3-4 предложения с выжимкой сути на указанном языке. "
+            "Сделай заголовок на русском (даже если исходник другой язык) и 3-4 предложения с выжимкой сути на указанном языке. "
             "Не описывай разделы или рубрики, не выдумывай факты — только из текста. Верни строго в формате:\n"
             "HEADLINE: <заголовок на русском>\nSUMMARY: <3-4 предложения обзора>."
         )
@@ -240,15 +240,18 @@ class NewsDigestGenerator:
             fallback_headline=candidate.title,
             fallback_summary=summary_text or article_text or "",
         )
+
+        headline = await self._translate_text(headline, "ru") or headline
+        summary = await self._translate_text(summary, language_code) or summary
+
         translation_link = await self._build_translation_link(
             title=headline,
-            text=article_text or summary_text,
+            text=article_text or summary_text or summary,
             language_code=language_code,
-        )
-        if not translation_link:
-            translation_link = candidate.link
+            original_link=candidate.link,
+        ) or self._google_translate_link(candidate.link, language_code)
 
-        digest = f"**{headline}**\n{summary}\n\nПеревод: {translation_link}\nОригинал: {candidate.link}"
+        digest = f"<b>{headline}</b>\n{summary}\n\nПеревод: {translation_link}\nОригинал: {candidate.link}"
         return digest
 
     async def _fetch_article_text(self, url: str) -> str:
@@ -284,19 +287,23 @@ class NewsDigestGenerator:
             summary = raw.strip()
         return headline, summary
 
-    async def _build_translation_link(self, title: str, text: str | None, language_code: str) -> str:
+    async def _build_translation_link(
+        self,
+        title: str,
+        text: str | None,
+        language_code: str,
+        original_link: str,
+    ) -> str:
+        target_lang = language_code or "ru"
         if not text:
             return ""
-        translated = await self._translate_text(text, language_code)
-        if not translated:
-            return ""
-        if not self.telegraph_token:
-            return ""
-        try:
-            return await self._publish_to_telegraph(title, translated)
-        except Exception as exc:  # noqa: BLE001
-            logger.info("Failed to publish to Telegraph: %s", exc)
-            return ""
+        translated = await self._translate_text(text, target_lang)
+        if translated and self.telegraph_token:
+            try:
+                return await self._publish_to_telegraph(title, translated)
+            except Exception as exc:  # noqa: BLE001
+                logger.info("Failed to publish to Telegraph: %s", exc)
+        return self._google_translate_link(original_link, target_lang)
 
     async def _translate_text(self, text: str, target_lang: str) -> str | None:
         try:
@@ -334,3 +341,10 @@ class NewsDigestGenerator:
             if not data.get("ok"):
                 raise RuntimeError(f"Telegraph error: {data}")
             return data["result"]["url"]
+
+    @staticmethod
+    def _google_translate_link(link: str, target_lang: str) -> str:
+        if not link:
+            return ""
+        encoded = quote_plus(link)
+        return f"https://translate.google.com/translate?hl={target_lang}&sl=auto&tl={target_lang}&u={encoded}"
