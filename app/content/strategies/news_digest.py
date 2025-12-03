@@ -211,7 +211,8 @@ class NewsDigestGenerator:
         prompt = (
             "Ты редактор новостного телеграм-канала. Тебе дают заголовок, выдержку из RSS и (если удалось) текст статьи. "
             "Сделай заголовок на русском (даже если исходник другой язык) и 3-4 предложения с выжимкой сути на указанном языке. "
-            "Не описывай разделы или рубрики, не выдумывай факты — только из текста. Верни строго в формате:\n"
+            "Игнорируй рекламные вставки, призывы зарегистрироваться, вебинары, конференции и CTA. Не описывай разделы или рубрики, "
+            "не выдумывай факты — только из текста. Верни строго в формате:\n"
             "HEADLINE: <заголовок на русском>\nSUMMARY: <3-4 предложения обзора>."
         )
 
@@ -243,6 +244,7 @@ class NewsDigestGenerator:
 
         headline = await self._translate_text(headline, "ru") or headline
         summary = await self._translate_text(summary, language_code) or summary
+        summary = self._strip_promotional(summary)
 
         translation_link = await self._build_translation_link(
             title=headline,
@@ -287,6 +289,13 @@ class NewsDigestGenerator:
             summary = raw.strip()
         return headline, summary
 
+    @staticmethod
+    def _strip_promotional(text: str) -> str:
+        promo_keywords = ("регистрируй", "запишись", "подпишись", "участвуй", "конференц", "вебинар", "регистрация")
+        sentences = re.split(r"(?<=[.!?])\s+", text)
+        cleaned = [s for s in sentences if not any(k in s.lower() for k in promo_keywords)]
+        return " ".join(cleaned).strip() or text
+
     async def _build_translation_link(
         self,
         title: str,
@@ -295,14 +304,15 @@ class NewsDigestGenerator:
         original_link: str,
     ) -> str:
         target_lang = language_code or "ru"
-        if not text:
-            return ""
-        translated = await self._translate_text(text, target_lang)
-        if translated and self.telegraph_token:
+        payload_text = text or ""
+        translated = await self._translate_text(payload_text, target_lang) or payload_text
+
+        if self.telegraph_token and translated:
             try:
                 return await self._publish_to_telegraph(title, translated)
             except Exception as exc:  # noqa: BLE001
                 logger.info("Failed to publish to Telegraph: %s", exc)
+
         return self._google_translate_link(original_link, target_lang)
 
     async def _translate_text(self, text: str, target_lang: str) -> str | None:
