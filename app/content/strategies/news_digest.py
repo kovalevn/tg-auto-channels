@@ -204,6 +204,8 @@ class NewsDigestGenerator:
         article_text = await self._fetch_article_text(candidate.link)
         article_text = self._squash_spaces(article_text)
         summary_text = self._squash_spaces(candidate.summary)
+        if not article_text:
+            logger.info("Article text empty after cleanup for %s", candidate.link)
 
         combined_context = f"{summary_text}\n\n{article_text}".strip() or summary_text or article_text or candidate.title
         combined_context = combined_context[:4000]  # keep prompt compact
@@ -249,7 +251,8 @@ class NewsDigestGenerator:
 
         translation_link = await self._build_translation_link(
             title=headline,
-            text=article_text or summary_text or summary,
+            text=article_text or summary_text or "",
+            translated_summary=summary,
             language_code=language_code,
             original_link=candidate.link,
         ) or self._google_translate_link(candidate.link, language_code)
@@ -278,7 +281,7 @@ class NewsDigestGenerator:
             text = re.sub(r"(?is)<[^>]+>", " ", raw)
             text = unescape(text)
             text = " ".join(text.split()).strip()
-            if len(text) < 40:
+            if len(text) < 20:
                 continue
             if NewsDigestGenerator._looks_like_boilerplate(text):
                 continue
@@ -366,19 +369,25 @@ class NewsDigestGenerator:
         self,
         title: str,
         text: str | None,
+        translated_summary: str | None,
         language_code: str,
         original_link: str,
     ) -> str:
         target_lang = language_code or "ru"
-        if not text:
-            return self._google_translate_link(original_link, target_lang)
 
-        translated = await self._translate_text(text, target_lang)
-        if translated and self.telegraph_token:
-            try:
-                return await self._publish_to_telegraph(title, translated)
-            except Exception as exc:  # noqa: BLE001
-                logger.info("Failed to publish to Telegraph: %s", exc)
+        if self.telegraph_token:
+            if text:
+                translated = await self._translate_text(text, target_lang)
+                if translated:
+                    try:
+                        return await self._publish_to_telegraph(title, translated)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.info("Failed to publish to Telegraph: %s", exc)
+            if translated_summary:
+                try:
+                    return await self._publish_to_telegraph(title, translated_summary)
+                except Exception as exc:  # noqa: BLE001
+                    logger.info("Failed to publish summary to Telegraph: %s", exc)
 
         return self._google_translate_link(original_link, target_lang)
 
@@ -393,13 +402,13 @@ class NewsDigestGenerator:
                         "content": f"Target language: {target_lang}\nText:\n{text[:6000]}",
                     },
                 ],
-                max_completion_tokens=600,
+                max_completion_tokens=1200,
                 temperature=0.0,
             )
             translated = completion.choices[0].message.content or ""
             return translated.strip()
         except Exception as exc:  # noqa: BLE001
-            logger.info("Translation failed: %s", exc)
+            logger.info("Translation failed (len=%d, lang=%s): %s", len(text), target_lang, exc)
             return None
 
     async def _publish_to_telegraph(self, title: str, content: str) -> str:
