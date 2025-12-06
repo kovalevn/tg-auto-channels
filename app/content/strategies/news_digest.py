@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 import random
 import re
@@ -7,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from html import unescape
 from typing import Any, Iterable
-from urllib.parse import quote_plus, urlparse
+from urllib.parse import urlparse, quote_plus
 
 import feedparser
 import httpx
@@ -29,7 +28,7 @@ class NewsCandidate:
 
 
 class NewsDigestGenerator:
-    """Generates a short news post from configured feeds."""
+    """Generates short news posts from configured RSS/Atom feeds."""
 
     def __init__(
         self,
@@ -45,7 +44,6 @@ class NewsDigestGenerator:
         self.max_entries_per_source = max_entries_per_source
         self.selection_pool_size = max(1, selection_pool_size)
         self.request_timeout = request_timeout
-        self.telegraph_token = getattr(settings, "telegraph_token", None)
 
     async def generate(self, channel: Channel, now: datetime, recent_links: set[str] | None = None) -> str:
         sources = self._flatten_sources(channel.news_source_lists)
@@ -201,30 +199,27 @@ class NewsDigestGenerator:
         return fallback
 
     async def _summarize_candidate(self, candidate: NewsCandidate, language_code: str = "ru") -> str:
+        summary_text = self._squash_spaces(candidate.summary)
         article_text = await self._fetch_article_text(candidate.link)
         article_text = self._squash_spaces(article_text)
-        summary_text = self._squash_spaces(candidate.summary)
-        if not article_text:
-            logger.info("Article text empty after cleanup for %s", candidate.link)
-
-        combined_context = f"{summary_text}\n\n{article_text}".strip() or summary_text or article_text or candidate.title
-        combined_context = combined_context[:4000]  # keep prompt compact
+        combined_context = f"{summary_text}\n\n{article_text}".strip() or summary_text or article_text or ""
+        combined_context = combined_context[:4000]
 
         prompt = (
-            "Ты редактор новостного телеграм-канала. Тебе дают заголовок, выдержку из RSS и (если удалось) текст статьи. "
-            "Сделай заголовок на русском (даже если исходник другой язык) и 3-4 предложения с выжимкой сути на указанном языке. "
-            "Игнорируй рекламные вставки, призывы зарегистрироваться, вебинары, конференции, CTA, ошибки воспроизведения видео, "
-            "сообщения про включение трекинга/уведомлений/подписок и системные сообщения типа 'страница не найдена'. "
-            "Не описывай разделы или рубрики, не выдумывай факты — только из текста. Верни строго в формате:\n"
-            "HEADLINE: <заголовок на русском>\nSUMMARY: <3-4 предложения обзора>."
+            "Ты редактор новостного телеграм-канала. Тебе дают заголовок и выдержку из RSS, а также текст статьи. "
+            "Сделай короткий цепляющий заголовок (на языке канала; если язык не указан, используй русский), 1–2 предложения сути новости, "
+            "затем мини-контекст 'Почему важно: ...' о значении или возможных последствиях. "
+            "Игнорируй навигацию, меню, плееры, ошибки воспроизведения, сообщения вроде 'страница не найдена', требования включить трекинг/уведомления/подписки, CTA, вебинары, конференции и другой мусор. "
+            "Не выдумывай факты — только из предоставленного текста. Верни строго в формате:\n"
+            "<заголовок>\n<1–2 предложения сути>\nПочему важно: <кратко>\nИсточник: <ссылка или оставить пусто>."
         )
 
         user_message = (
-            f"Язык обзора: {language_code}\n"
+            f"Язык канала (строго использовать для ответа): {language_code}\n"
             f"Заголовок из ленты: {candidate.title}\n"
             f"Краткое описание из RSS: {summary_text}\n"
             f"Текст статьи (если есть): {combined_context}\n"
-            f"Ссылка: {candidate.link}\n"
+            f"Ссылка на оригинал: {candidate.link}\n"
             f"Источник: {candidate.source}"
         )
 
@@ -234,31 +229,12 @@ class NewsDigestGenerator:
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": user_message},
             ],
-            max_completion_tokens=220,
+            max_completion_tokens=260,
             temperature=0.2,
         )
 
-        digest_raw = completion.choices[0].message.content or ""
-        headline, summary = self._parse_headline_summary(
-            digest_raw,
-            fallback_headline=candidate.title,
-            fallback_summary=summary_text or article_text or "",
-        )
-
-        headline = await self._translate_text(headline, "ru") or headline
-        summary = await self._translate_text(summary, language_code) or summary
-        summary = self._strip_promotional(summary)
-
-        translation_link = await self._build_translation_link(
-            title=headline,
-            text=article_text or summary_text or "",
-            translated_summary=summary,
-            language_code=language_code,
-            original_link=candidate.link,
-        ) or self._google_translate_link(candidate.link, language_code)
-
-        digest = f"<b>{headline}</b>\n{summary}\n\nПеревод: {translation_link}\nОригинал: {candidate.link}"
-        return digest
+        digest = completion.choices[0].message.content or ""
+        return digest.strip()
 
     async def _fetch_article_text(self, url: str) -> str:
         try:
@@ -268,15 +244,13 @@ class NewsDigestGenerator:
         except Exception as exc:  # noqa: BLE001
             logger.info("Failed to fetch article text from %s: %s", url, exc)
             return ""
-
         return self._extract_text_from_html(response.text)
 
     @staticmethod
     def _extract_text_from_html(html: str) -> str:
-        """Lightweight HTML-to-text conversion with basic boilerplate stripping."""
         html = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", html)
         paragraphs = re.findall(r"(?is)<p[^>]*>(.*?)</p>", html)
-        cleaned_parts: list[str] = []
+        cleaned: list[str] = []
         for raw in paragraphs:
             text = re.sub(r"(?is)<[^>]+>", " ", raw)
             text = unescape(text)
@@ -285,17 +259,13 @@ class NewsDigestGenerator:
                 continue
             if NewsDigestGenerator._looks_like_boilerplate(text):
                 continue
-            cleaned_parts.append(text)
-        if not cleaned_parts:
-            # Fallback to plain text if no good paragraphs found
-            text = re.sub(r"(?is)<[^>]+>", " ", html)
-            text = unescape(text)
-            text = " ".join(text.split())
-            text = text.strip()
-            if NewsDigestGenerator._looks_like_boilerplate(text):
-                return ""
-            return text
-        return "\n".join(cleaned_parts)
+            cleaned.append(text)
+        if cleaned:
+            return "\n".join(cleaned)
+        text = re.sub(r"(?is)<[^>]+>", " ", html)
+        text = unescape(text)
+        text = " ".join(text.split())
+        return text.strip()
 
     @staticmethod
     def _looks_like_boilerplate(text: str) -> bool:
@@ -311,9 +281,6 @@ class NewsDigestGenerator:
             "manage subscription",
             "settings",
             "notification",
-            "offline",
-            "home",
-            "breaking news",
             "page not found",
             "content not available",
             "does not exist",
@@ -331,102 +298,6 @@ class NewsDigestGenerator:
             "menu menu",
         )
         return any(k in lowered for k in boilerplate_keywords)
-
-    @staticmethod
-    def _parse_headline_summary(raw: str, fallback_headline: str, fallback_summary: str) -> tuple[str, str]:
-        headline = fallback_headline
-        summary = fallback_summary
-        for line in raw.splitlines():
-            if line.strip().upper().startswith("HEADLINE:"):
-                headline = line.split(":", 1)[1].strip() or headline
-            if line.strip().upper().startswith("SUMMARY:"):
-                summary = line.split(":", 1)[1].strip() or summary
-        if summary == fallback_summary and raw:
-            summary = raw.strip()
-        summary = NewsDigestGenerator._strip_promotional(summary)
-        return headline, summary
-
-    @staticmethod
-    def _strip_promotional(text: str) -> str:
-        promo_keywords = (
-            "регистрируй",
-            "регистрация",
-            "подпишись",
-            "subscribe",
-            "newsletter",
-            "участвуй",
-            "конференц",
-            "вебинар",
-            "watch live",
-            "sign up",
-            "join us",
-        )
-        sentences = re.split(r"(?<=[.!?])\s+", text)
-        cleaned = [s for s in sentences if not any(k in s.lower() for k in promo_keywords)]
-        return " ".join(cleaned).strip() or text
-
-    async def _build_translation_link(
-        self,
-        title: str,
-        text: str | None,
-        translated_summary: str | None,
-        language_code: str,
-        original_link: str,
-    ) -> str:
-        target_lang = language_code or "ru"
-
-        if self.telegraph_token:
-            if text:
-                translated = await self._translate_text(text, target_lang)
-                if translated:
-                    try:
-                        return await self._publish_to_telegraph(title, translated)
-                    except Exception as exc:  # noqa: BLE001
-                        logger.info("Failed to publish to Telegraph: %s", exc)
-            if translated_summary:
-                try:
-                    return await self._publish_to_telegraph(title, translated_summary)
-                except Exception as exc:  # noqa: BLE001
-                    logger.info("Failed to publish summary to Telegraph: %s", exc)
-
-        return self._google_translate_link(original_link, target_lang)
-
-    async def _translate_text(self, text: str, target_lang: str) -> str | None:
-        try:
-            completion = await self.client.chat.completions.create(
-                model="gpt-5.1",
-                messages=[
-                    {"role": "system", "content": "Translate the text to the target language. Return plain text only."},
-                    {
-                        "role": "user",
-                        "content": f"Target language: {target_lang}\nText:\n{text[:6000]}",
-                    },
-                ],
-                max_completion_tokens=1200,
-                temperature=0.0,
-            )
-            translated = completion.choices[0].message.content or ""
-            return translated.strip()
-        except Exception as exc:  # noqa: BLE001
-            logger.info("Translation failed (len=%d, lang=%s): %s", len(text), target_lang, exc)
-            return None
-
-    async def _publish_to_telegraph(self, title: str, content: str) -> str:
-        paragraphs = [p.strip() for p in content.split("\n") if p.strip()]
-        nodes = [{"tag": "p", "children": [p]} for p in paragraphs]
-        payload = {
-            "access_token": self.telegraph_token,
-            "title": title[:256] or "News",
-            "content": json.dumps(nodes),
-            "return_content": False,
-        }
-        async with httpx.AsyncClient(timeout=self.request_timeout) as client:
-            response = await client.post("https://api.telegra.ph/createPage", data=payload)
-            response.raise_for_status()
-            data = response.json()
-            if not data.get("ok"):
-                raise RuntimeError(f"Telegraph error: {data}")
-            return data["result"]["url"]
 
     @staticmethod
     def _google_translate_link(link: str, target_lang: str) -> str:
