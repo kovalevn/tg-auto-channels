@@ -1,4 +1,5 @@
 import logging
+import re
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
@@ -56,7 +57,13 @@ class PostingService:
             logger.warning("Strategy %s not registered, using default", strategy_name)
             generator = self.content_registry.default()
 
-        content = await generator.generate(channel, now)
+        recent_posts = await self.post_repo.last_posts(channel.id, limit=50)
+        recent_links = self._extract_links_from_posts(recent_posts)
+
+        content = await generator.generate(channel, now, recent_links=recent_links)
+        if not content or not content.strip():
+            logger.info("No content generated for channel %s, skipping send", channel.internal_name)
+            return
         logger.info("Generated content for channel %s", channel.internal_name)
         scheduled_for = now
         image_url: str | None = None
@@ -98,3 +105,12 @@ class PostingService:
                 error=str(exc),
             )
             raise
+
+    @staticmethod
+    def _extract_links_from_posts(posts) -> set[str]:
+        links: set[str] = set()
+        url_regex = re.compile(r"https?://\S+")
+        for post in posts:
+            for match in url_regex.findall(post.content or ""):
+                links.add(match.rstrip(").,"))
+        return links

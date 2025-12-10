@@ -1,4 +1,5 @@
 import logging
+import re
 from datetime import datetime, timezone
 import uuid
 
@@ -7,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from app.api import deps
 from app.content.registry import ContentRegistry
 from app.repositories.channels import ChannelRepository
+from app.repositories.posts import PostRepository
 from app.schemas.post import PostPreviewResponse
 from app.services.image_generation import ImageGenerationService
 
@@ -19,6 +21,7 @@ async def preview_post(
     channel_id: uuid.UUID,
     channel_repo: ChannelRepository = Depends(deps.get_channel_repository),
     registry: ContentRegistry = Depends(deps.get_content_registry),
+    post_repo: PostRepository = Depends(deps.get_post_repository),
     image_generator: ImageGenerationService | None = Depends(deps.get_image_generator),
 ):
     channel = await channel_repo.get(channel_id)
@@ -30,7 +33,11 @@ async def preview_post(
         generator = registry.get(strategy)
     except KeyError:
         generator = registry.default()
-    content = await generator.generate(channel, now)
+
+    recent_posts = await post_repo.last_posts(channel.id, limit=50)
+    recent_links = _extract_links_from_posts(recent_posts)
+
+    content = await generator.generate(channel, now, recent_links=recent_links)
     image_url: str | None = None
     if channel.generate_images and image_generator:
         try:
@@ -39,3 +46,12 @@ async def preview_post(
             logger.exception("Failed to generate preview image for channel %s", channel.internal_name)
 
     return PostPreviewResponse(content=content, generated_at=now, image_url=image_url)
+
+
+def _extract_links_from_posts(posts) -> set[str]:
+    links: set[str] = set()
+    url_regex = re.compile(r"https?://\S+")
+    for post in posts:
+        for match in url_regex.findall(post.content or ""):
+            links.add(match.rstrip(").,"))
+    return links

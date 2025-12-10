@@ -45,6 +45,7 @@ This document outlines a proposed architecture, schema, and implementation plan 
 - `timezone` (varchar) — e.g., "Europe/Berlin"
 - `auto_post_enabled` (boolean)
 - `content_strategy` (varchar, nullable) — identifier for strategy/LLM prompt style
+- `news_source_lists` (jsonb, nullable) — массив списков RSS/Atom лент для новостного дайджеста
 - Timestamps: `created_at`, `updated_at`
 
 ### Table: posts

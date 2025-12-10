@@ -1,19 +1,26 @@
 version: '3.9'
+
 services:
   db:
     image: postgres:15
     restart: always
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: tg_auto_channels
-    ports:
-      - "5432:5432"
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - db-data:/var/lib/postgresql/data
+    # Небольшие лимиты ресурсов (могут игнорироваться, но не вредят)
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+
   app:
     build: .
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    restart: always
     env_file:
       - .env
     depends_on:
@@ -22,5 +29,33 @@ services:
       - "8000:8000"
     volumes:
       - .:/app
+    deploy:
+      resources:
+        limits:
+          cpus: "0.7"
+          memory: 512M
+
+  # Автобэкапы базы
+  db-backup:
+    image: prodrigestivill/postgres-backup-local
+    restart: always
+    depends_on:
+      - db
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      SCHEDULE: "@every 6h"
+      BACKUP_KEEP_DAYS: 7
+      BACKUP_KEEP_WEEKS: 4
+      BACKUP_KEEP_MONTHS: 6
+      BACKUP_UID: "0"
+      BACKUP_GID: "0"
+      BACKUP_DIR: "/backups"
+    volumes:
+      - ./db_backups:/backups
+
 volumes:
   db-data:

@@ -14,8 +14,12 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
     database_url: str = Field(..., alias="DATABASE_URL")
+    postgres_user: str | None = Field(default=None, alias="POSTGRES_USER")
+    postgres_password: str | None = Field(default=None, alias="POSTGRES_PASSWORD")
+    postgres_db: str | None = Field(default=None, alias="POSTGRES_DB")
     telegram_bot_token: str = Field(..., alias="TELEGRAM_BOT_TOKEN")
     openai_api_key: str | None = Field(default=None, alias="OPENAI_API_KEY")
+    telegraph_token: str | None = Field(default=None, alias="TELEGRAPH_TOKEN")
     posting_interval_minutes: int = Field(default=10, alias="POSTING_INTERVAL_MINUTES")
 
     environment: Literal["dev", "prod", "test"] = Field(default="dev", alias="ENVIRONMENT")
