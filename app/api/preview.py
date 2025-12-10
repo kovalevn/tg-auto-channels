@@ -1,9 +1,11 @@
 import logging
 import re
 from datetime import datetime, timezone
+from io import BytesIO
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 
 from app.api import deps
 from app.content.registry import ContentRegistry
@@ -19,6 +21,7 @@ logger = logging.getLogger(__name__)
 @router.get("/{channel_id}", response_model=PostPreviewResponse)
 async def preview_post(
     channel_id: uuid.UUID,
+    download_image: bool = False,
     channel_repo: ChannelRepository = Depends(deps.get_channel_repository),
     registry: ContentRegistry = Depends(deps.get_content_registry),
     post_repo: PostRepository = Depends(deps.get_post_repository),
@@ -39,12 +42,23 @@ async def preview_post(
 
     content = await generator.generate(channel, now, recent_links=recent_links)
     image_url: str | None = None
+    image_bytes: bytes | None = None
     if channel.generate_images and image_generator:
         try:
             generated_image = await image_generator.generate_image(content)
-            image_url = generated_image.url or generated_image.data_url
+            image_url = generated_image.url
+            image_bytes = generated_image.image_bytes
         except Exception:  # noqa: BLE001
             logger.exception("Failed to generate preview image for channel %s", channel.internal_name)
+
+    if download_image:
+        if image_bytes:
+            return StreamingResponse(
+                BytesIO(image_bytes),
+                media_type="image/png",
+                headers={"Content-Disposition": 'attachment; filename="preview.png"'},
+            )
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Preview image not available")
 
     return PostPreviewResponse(content=content, generated_at=now, image_url=image_url)
 

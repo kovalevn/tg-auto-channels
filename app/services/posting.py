@@ -74,7 +74,7 @@ class PostingService:
             else:
                 try:
                     generated_image = await self.image_generator.generate_image(content)
-                    image_url = generated_image.url or generated_image.data_url
+                    image_url = generated_image.url
                     if generated_image.url:
                         image_payload = generated_image.url
                     elif generated_image.image_bytes:

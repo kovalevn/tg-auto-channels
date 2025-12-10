@@ -12,7 +12,6 @@ logger = logging.getLogger(__name__)
 @dataclass
 class GeneratedImage:
     url: str | None
-    data_url: str | None
     image_bytes: bytes | None
 
 
@@ -41,14 +40,12 @@ class ImageGenerationService:
         if not image_url and not b64_image:
             raise RuntimeError("No image data returned from OpenAI")
 
-        data_url: str | None = None
         image_bytes: bytes | None = None
         if b64_image:
             try:
                 image_bytes = base64.b64decode(b64_image)
             except Exception as exc:  # noqa: BLE001
                 raise RuntimeError("Failed to decode base64 image from OpenAI") from exc
-            data_url = f"data:image/png;base64,{b64_image}"
 
         logger.info("Generated image for prompt length %s", len(prompt))
-        return GeneratedImage(url=image_url, data_url=data_url, image_bytes=image_bytes)
+        return GeneratedImage(url=image_url, image_bytes=image_bytes)
