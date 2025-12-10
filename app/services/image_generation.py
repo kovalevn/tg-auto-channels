@@ -26,9 +26,10 @@ class ImageGenerationService:
             self.client = AsyncOpenAI(api_key=settings.openai_api_key)
 
     async def generate_image(self, prompt: str) -> GeneratedImage:
+        image_prompt = self._build_image_prompt(prompt)
         response = await self.client.images.generate(
             model="gpt-image-1",
-            prompt=prompt,
+            prompt=image_prompt,
             size="1024x1024",
         )
         if not response.data:
@@ -49,3 +50,12 @@ class ImageGenerationService:
 
         logger.info("Generated image for prompt length %s", len(prompt))
         return GeneratedImage(url=image_url, image_bytes=image_bytes)
+
+    @staticmethod
+    def _build_image_prompt(post_content: str) -> str:
+        return (
+            "Create a high-quality image that illustrates the following post. "
+            "Use subjects and scenes that best match the content. "
+            "Do not include any text, captions, watermarks, or overlays. "
+            f"Post content: {post_content}"
+        )
