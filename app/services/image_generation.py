@@ -22,6 +22,7 @@ class ImageGenerationService:
             model="gpt-image-1",
             prompt=prompt,
             size="1024x1024",
+            response_format="url",
         )
         if not response.data:
             raise RuntimeError("No image data returned from OpenAI")
