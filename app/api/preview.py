@@ -41,7 +41,8 @@ async def preview_post(
     image_url: str | None = None
     if channel.generate_images and image_generator:
         try:
-            image_url = await image_generator.generate_image(content)
+            generated_image = await image_generator.generate_image(content)
+            image_url = generated_image.url or generated_image.data_url
         except Exception:  # noqa: BLE001
             logger.exception("Failed to generate preview image for channel %s", channel.internal_name)
 

@@ -67,21 +67,27 @@ class PostingService:
         logger.info("Generated content for channel %s", channel.internal_name)
         scheduled_for = now
         image_url: str | None = None
+        image_payload: str | bytes | None = None
         if channel.generate_images:
             if not self.image_generator:
                 logger.warning("Image generation requested but no generator configured")
             else:
                 try:
-                    image_url = await self.image_generator.generate_image(content)
+                    generated_image = await self.image_generator.generate_image(content)
+                    image_url = generated_image.url or generated_image.data_url
+                    if generated_image.url:
+                        image_payload = generated_image.url
+                    elif generated_image.image_bytes:
+                        image_payload = generated_image.image_bytes
                 except Exception as exc:  # noqa: BLE001
                     logger.exception("Failed to generate image for channel %s", channel.internal_name)
                     image_url = None
 
         try:
-            if image_url:
+            if image_payload:
                 await self.telegram_client.send_photo(
                     channel.telegram_channel_id,
-                    photo_url=image_url,
+                    photo=image_payload,
                     caption=content,
                 )
             else:
