@@ -252,23 +252,24 @@ class NewsDigestGenerator:
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": user_message},
             ],
-            max_completion_tokens=260,
+            max_completion_tokens=320,
             temperature=0.2,
         )
 
         choice = completion.choices[0]
         finish_reason = getattr(choice, "finish_reason", None)
-        digest = (choice.message.content or "").strip()
+        digest = self._extract_choice_text(choice)
 
         if digest:
             return digest
 
         logger.warning(
-            "Empty digest from model for %s (finish_reason=%s, prompt_tokens=%s, completion_tokens=%s)",
+            "Empty digest from model for %s (finish_reason=%s, prompt_tokens=%s, completion_tokens=%s, refusal=%s)",
             candidate.link,
             finish_reason,
             getattr(completion.usage, "prompt_tokens", None),
             getattr(completion.usage, "completion_tokens", None),
+            getattr(getattr(choice, "message", None), "refusal", None),
         )
 
         retry_text = await self._retry_summarize(candidate, language_code, summary_text)
@@ -292,23 +293,50 @@ class NewsDigestGenerator:
                 {"role": "system", "content": "Сформируй новостную заметку по тому же формату, даже если контекст усечён."},
                 {"role": "user", "content": retry_user_message},
             ],
-            max_completion_tokens=200,
+            max_completion_tokens=260,
             temperature=0.2,
         )
 
         choice = completion.choices[0]
         finish_reason = getattr(choice, "finish_reason", None)
-        text = (choice.message.content or "").strip()
+        text = self._extract_choice_text(choice)
 
         if not text:
             logger.error(
-                "Retry digest is still empty for %s (finish_reason=%s, prompt_tokens=%s, completion_tokens=%s)",
+                "Retry digest is still empty for %s (finish_reason=%s, prompt_tokens=%s, completion_tokens=%s, refusal=%s)",
                 candidate.link,
                 finish_reason,
                 getattr(completion.usage, "prompt_tokens", None),
                 getattr(completion.usage, "completion_tokens", None),
+                getattr(getattr(choice, "message", None), "refusal", None),
             )
         return text
+
+    @staticmethod
+    def _extract_choice_text(choice: Any) -> str:
+        """Handle both string and structured content responses from OpenAI."""
+        message = getattr(choice, "message", None)
+        if not message:
+            return ""
+
+        content = getattr(message, "content", None)
+
+        if isinstance(content, str):
+            return content.strip()
+
+        # Newer API versions can return content as a list of parts
+        if isinstance(content, list):
+            parts: list[str] = []
+            for part in content:
+                if isinstance(part, dict):
+                    text = part.get("text")
+                    if text:
+                        parts.append(str(text))
+                else:
+                    parts.append(str(part))
+            return "\n".join(parts).strip()
+
+        return ""
 
     async def _fetch_article_text(self, url: str) -> str:
         try:
