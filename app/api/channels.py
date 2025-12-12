@@ -1,12 +1,19 @@
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import deps
+from app.content.registry import ContentRegistry
 from app.db.models import Channel
 from app.repositories.channels import ChannelRepository
+from app.repositories.posts import PostRepository
 from app.schemas.channel import ChannelCreate, ChannelRead, ChannelUpdate
+from app.schemas.post import PostSendResponse
+from app.services.image_generation import ImageGenerationService
+from app.services.posting import PostingService
+from app.telegram.client import TelegramClient
 
 router = APIRouter(prefix="/channels", tags=["channels"])
 
@@ -62,3 +69,41 @@ async def set_auto_posting(
     await session.commit()
     await session.refresh(channel)
     return channel
+
+
+@router.post("/{channel_id}/trigger-post", response_model=PostSendResponse)
+async def trigger_post(
+    channel_id: uuid.UUID,
+    force: bool = Query(
+        False,
+        description="Отправить пост даже если не выполнены условия окна/частоты постинга",
+    ),
+    channel_repo: ChannelRepository = Depends(deps.get_channel_repository),
+    post_repo: PostRepository = Depends(deps.get_post_repository),
+    registry: ContentRegistry = Depends(deps.get_content_registry),
+    telegram_client: TelegramClient = Depends(deps.get_telegram_client),
+    image_generator: ImageGenerationService | None = Depends(deps.get_image_generator),
+    session: AsyncSession = Depends(deps.get_session),
+):
+    channel = await channel_repo.get(channel_id)
+    if not channel:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Channel not found")
+
+    posting_service = PostingService(registry, post_repo, telegram_client, image_generator)
+    now = datetime.now(timezone.utc)
+
+    if not force and not await posting_service.should_post(channel, now):
+        return PostSendResponse(status="skipped", reason="Posting conditions not met (window/frequency)")
+
+    try:
+        content, image_url = await posting_service.create_and_send_post(channel, now)
+    except Exception as exc:  # noqa: BLE001
+        await session.rollback()
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="Failed to send post") from exc
+
+    await session.commit()
+
+    if not content:
+        return PostSendResponse(status="skipped", reason="No content generated")
+
+    return PostSendResponse(status="sent", content=content, image_url=image_url, sent_at=now)

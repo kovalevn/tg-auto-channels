@@ -49,7 +49,7 @@ class PostingService:
             return True
         return now - last_sent >= min_interval
 
-    async def create_and_send_post(self, channel: Channel, now: datetime) -> None:
+    async def create_and_send_post(self, channel: Channel, now: datetime) -> tuple[str | None, str | None]:
         strategy_name = channel.content_strategy or "placeholder"
         try:
             generator = self.content_registry.get(strategy_name)
@@ -63,7 +63,7 @@ class PostingService:
         content = await generator.generate(channel, now, recent_links=recent_links)
         if not content or not content.strip():
             logger.info("No content generated for channel %s, skipping send", channel.internal_name)
-            return
+            return None, None
         logger.info("Generated content for channel %s", channel.internal_name)
         scheduled_for = now
         image_url: str | None = None
@@ -100,6 +100,7 @@ class PostingService:
                 scheduled_for=scheduled_for,
                 sent_at=now,
             )
+            return content, image_url
         except Exception as exc:  # noqa: BLE001
             logger.exception("Failed to send post to channel %s", channel.internal_name)
             await self.post_repo.record_post(
