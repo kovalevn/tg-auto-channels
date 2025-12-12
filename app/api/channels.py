@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import deps
@@ -42,6 +42,23 @@ async def update_channel(
 
     for key, value in payload.model_dump(exclude_unset=True).items():
         setattr(channel, key, value)
+    await session.commit()
+    await session.refresh(channel)
+    return channel
+
+
+@router.post("/{channel_id}/auto-posting", response_model=ChannelRead)
+async def set_auto_posting(
+    channel_id: uuid.UUID,
+    enabled: bool = Query(..., description="Enable or disable auto posting for the channel"),
+    channel_repo: ChannelRepository = Depends(deps.get_channel_repository),
+    session: AsyncSession = Depends(deps.get_session),
+):
+    channel = await channel_repo.get(channel_id)
+    if not channel:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Channel not found")
+
+    channel.auto_post_enabled = enabled
     await session.commit()
     await session.refresh(channel)
     return channel
