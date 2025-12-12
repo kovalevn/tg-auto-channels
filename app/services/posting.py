@@ -1,6 +1,7 @@
 import logging
 import re
 from datetime import datetime, time, timedelta
+from html import escape
 from zoneinfo import ZoneInfo
 
 from app.content.registry import ContentRegistry
@@ -83,18 +84,19 @@ class PostingService:
                     logger.exception("Failed to generate image for channel %s", channel.internal_name)
                     image_url = None
 
+        rendered_content = self._render_for_telegram(content)
         try:
             if image_payload:
                 await self.telegram_client.send_photo(
                     channel.telegram_channel_id,
                     photo=image_payload,
-                    caption=content,
+                    caption=rendered_content,
                 )
             else:
-                await self.telegram_client.send_message(channel.telegram_channel_id, content)
+                await self.telegram_client.send_message(channel.telegram_channel_id, rendered_content)
             await self.post_repo.record_post(
                 channel_id=channel.id,
-                content=content,
+                content=rendered_content,
                 image_url=image_url,
                 status=PostStatusEnum.sent,
                 scheduled_for=scheduled_for,
@@ -121,3 +123,16 @@ class PostingService:
             for match in url_regex.findall(post.content or ""):
                 links.add(match.rstrip(").,"))
         return links
+
+    @staticmethod
+    def _render_for_telegram(text: str) -> str:
+        """Convert simple markdown-style bold and links to HTML for Telegram."""
+        # Escape HTML to avoid injection, then replace our markdown markers.
+        escaped = escape(text)
+        bold_converted = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", escaped, flags=re.S)
+        link_converted = re.sub(
+            r"\[([^\]]+?)\]\((https?://[^\s)]+)\)",
+            r'<a href="\2">\1</a>',
+            bold_converted,
+        )
+        return link_converted
