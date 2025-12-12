@@ -54,14 +54,33 @@ class NewsDigestGenerator:
         cutoff = now_utc - timedelta(hours=self.lookback_hours)
         candidates = await self._collect_candidates(sources, cutoff, now_utc)
         if not candidates:
+            logger.info("No news candidates for channel %s within last %sh", channel.id, self.lookback_hours)
             return ""
 
         seen_links = {self._normalize_link(link) for link in (recent_links or set()) if link}
         filtered = [c for c in candidates if self._normalize_link(c.link) not in seen_links]
         if filtered:
+            logger.debug(
+                "Candidate filtering: total=%d, unique=%d, seen_links=%d for channel %s",
+                len(candidates),
+                len(filtered),
+                len(seen_links),
+                channel.id,
+            )
             candidates = filtered
         elif seen_links:
+            logger.info(
+                "All %d candidates already seen for channel %s; skipping generation",
+                len(candidates),
+                channel.id,
+            )
             return ""
+        else:
+            logger.debug(
+                "Candidate filtering: total=%d, no seen_links for channel %s",
+                len(candidates),
+                channel.id,
+            )
 
         best_candidate = self._pick_best_candidate(candidates, now_utc)
         return await self._summarize_candidate(best_candidate, channel.language_code or "ru")
@@ -237,8 +256,59 @@ class NewsDigestGenerator:
             temperature=0.2,
         )
 
-        digest = completion.choices[0].message.content or ""
-        return digest.strip()
+        choice = completion.choices[0]
+        finish_reason = getattr(choice, "finish_reason", None)
+        digest = (choice.message.content or "").strip()
+
+        if digest:
+            return digest
+
+        logger.warning(
+            "Empty digest from model for %s (finish_reason=%s, prompt_tokens=%s, completion_tokens=%s)",
+            candidate.link,
+            finish_reason,
+            getattr(completion.usage, "prompt_tokens", None),
+            getattr(completion.usage, "completion_tokens", None),
+        )
+
+        retry_text = await self._retry_summarize(candidate, language_code, summary_text)
+        return retry_text
+
+    async def _retry_summarize(self, candidate: NewsCandidate, language_code: str, summary_text: str) -> str:
+        """Second attempt with reduced context to avoid content filters."""
+        trimmed_summary = (summary_text or "").strip()[:1000]
+        retry_user_message = (
+            f"Язык канала: {language_code}\n"
+            f"Заголовок из RSS: {candidate.title}\n"
+            f"Краткое описание из RSS: {trimmed_summary}\n"
+            f"Контекст статьи или заметки: {trimmed_summary}\n"
+            f"Ссылка на материал: {candidate.link}\n"
+            f"Название источника: {candidate.source}"
+        )
+
+        completion = await self.client.chat.completions.create(
+            model="gpt-5.1",
+            messages=[
+                {"role": "system", "content": "Сформируй новостную заметку по тому же формату, даже если контекст усечён."},
+                {"role": "user", "content": retry_user_message},
+            ],
+            max_completion_tokens=200,
+            temperature=0.2,
+        )
+
+        choice = completion.choices[0]
+        finish_reason = getattr(choice, "finish_reason", None)
+        text = (choice.message.content or "").strip()
+
+        if not text:
+            logger.error(
+                "Retry digest is still empty for %s (finish_reason=%s, prompt_tokens=%s, completion_tokens=%s)",
+                candidate.link,
+                finish_reason,
+                getattr(completion.usage, "prompt_tokens", None),
+                getattr(completion.usage, "completion_tokens", None),
+            )
+        return text
 
     async def _fetch_article_text(self, url: str) -> str:
         try:
