@@ -328,14 +328,21 @@ class NewsDigestGenerator:
         if isinstance(content, list):
             parts: list[str] = []
             for part in content:
+                text_value: str | None = None
                 if isinstance(part, dict):
-                    text = part.get("text")
-                    if text:
-                        parts.append(str(text))
+                    text_value = part.get("text") or part.get("output_text")
+                else:
+                    text_value = getattr(part, "text", None) or getattr(part, "output_text", None)
+                if text_value:
+                    parts.append(str(text_value))
                 else:
                     parts.append(str(part))
-            return "\n".join(parts).strip()
+            extracted = "\n".join(parts).strip()
+            if not extracted:
+                logger.debug("Empty content parts extracted; raw parts=%s", content)
+            return extracted
 
+        logger.debug("Unhandled message content type %s: %r", type(content), content)
         return ""
 
     async def _fetch_article_text(self, url: str) -> str:
